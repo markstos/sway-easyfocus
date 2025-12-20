@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -11,24 +10,42 @@ use crate::options::Options;
 
 mod cli;
 mod options;
+mod sway;
 mod ui;
 mod util;
 
-fn make_lockfile() -> io::Result<PathBuf> {
-    use std::env;
+struct Lockfile {
+    path: PathBuf,
+}
 
-    let mut lock_path = env::var("TMPDIR").map_or(PathBuf::from("/tmp"), |dir| {
-        let tentative_dir = Path::new(&dir);
-        if tentative_dir.is_dir() {
-            PathBuf::from(tentative_dir)
-        } else {
-            eprintln!("[$TMPDIR] is not a directory! Falling back to [/tmp].");
-            PathBuf::from("/tmp")
-        }
-    });
+impl Drop for Lockfile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).expect(&format!(
+            "Failed to remove lockfile at {}.",
+            &self.path.display()
+        ));
+    }
+}
 
-    lock_path.push("sway-easyfocus-lockfile");
-    File::create_new(&lock_path).map(move |_| lock_path)
+impl Lockfile {
+    pub fn new() -> Self {
+        use std::env;
+
+        let mut lock_path = env::var("TMPDIR").map_or(PathBuf::from("/tmp"), |dir| {
+            let tentative_dir = Path::new(&dir);
+            if tentative_dir.is_dir() {
+                PathBuf::from(tentative_dir)
+            } else {
+                eprintln!("[$TMPDIR] is not a directory! Falling back to [/tmp].");
+                PathBuf::from("/tmp")
+            }
+        });
+
+        lock_path.push("sway-easyfocus-lockfile");
+        File::create_new(&lock_path)
+            .map(move |_| Self { path: lock_path })
+            .expect("Lockfile exists! (Is another instance running?)")
+    }
 }
 
 fn read_options() -> Rc<Options> {
@@ -53,14 +70,12 @@ fn read_options() -> Rc<Options> {
 }
 
 fn main() {
+    let _ = Lockfile::new();
+
     let opts = read_options();
 
-    let lock_path = make_lockfile().expect("Lockfile exists! (Is another instance running?)");
-
-    ui::run_ui(opts);
-
-    std::fs::remove_file(&lock_path).expect(&format!(
-        "Failed to remove lockfile at {}.",
-        &lock_path.display()
-    ));
+    match swayipc::Connection::new() {
+        Ok(conn) => ui::run_ui(conn, opts),
+        Err(_) => eprintln!("Failed to connect to sway."),
+    }
 }
