@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
-use crate::{cli::Args, util::Rgb};
+use crate::{
+    cli::{Args, Command},
+    util::Rgb,
+};
 
 #[derive(Debug)]
 pub struct Options {
@@ -21,6 +24,7 @@ pub struct Options {
     pub label_margin_x: i32,
     pub label_margin_y: i32,
     pub show_confirmation: bool,
+    pub command: Command,
 }
 
 impl Default for Options {
@@ -43,6 +47,7 @@ impl Default for Options {
             label_margin_x: 4,
             label_margin_y: 2,
             show_confirmation: true,
+            command: Command::Focus,
         }
     }
 }
@@ -73,7 +78,8 @@ impl Options {
         update!(label_padding_y);
         update!(label_margin_x);
         update!(label_margin_y);
-        update!(show_confirmation);
+        self.show_confirmation = args.show_confirmation;
+        update!(command);
     }
 
     pub fn to_css(&self) -> String {

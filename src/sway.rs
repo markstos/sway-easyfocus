@@ -71,3 +71,11 @@ pub fn get_all_windows(workspace: &Node) -> Vec<Node> {
     nodes.reverse();
     nodes
 }
+
+pub fn focus(conn: &mut Connection, con_id: i64) -> Fallible<Vec<Fallible<()>>> {
+    conn.run_command(format!("[con_id={}] focus", con_id))
+}
+
+pub fn swap(conn: &mut Connection, con_id: i64) -> Fallible<Vec<Fallible<()>>> {
+    conn.run_command(format!("swap container with con_id {}", con_id))
+}

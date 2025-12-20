@@ -94,7 +94,7 @@ pub struct Args {
 
     /// Show confirmation window after selection
     #[arg(long = "show-confirmation")]
-    pub show_confirmation: Option<bool>,
+    pub show_confirmation: bool,
 
     /// The selected command
     #[command(subcommand)]

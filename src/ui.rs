@@ -1,14 +1,14 @@
-use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, time::Duration};
 
 use gtk4::{
     Application, CssProvider,
     gdk::prelude::{DisplayExt, MonitorExt},
     gio::prelude::{ApplicationExt, ApplicationExtManual, ListModelExt},
-    glib::object::Cast,
+    glib::{self, ControlFlow, Propagation, object::Cast},
     prelude::{FixedExt, GtkWindowExt, WidgetExt},
 };
 
-use crate::{options::Options, sway};
+use crate::{cli::Command, options::Options, sway};
 
 fn calculate_geometry(
     window: &swayipc::Node,
@@ -33,26 +33,126 @@ fn calculate_geometry(
     (rel_x - anchor_x, rel_y - anchor_y)
 }
 
+fn handle_keypress(
+    conn: &mut swayipc::Connection,
+    keys_to_con_ids: &HashMap<char, i64>,
+    keyval: &str,
+    command: Command,
+) -> Result<Option<char>, swayipc::Error> {
+    if keyval.len() == 1 {
+        // we can unwrap because keyval has length 1
+        let c = keyval.chars().next().unwrap();
+        if c.is_alphabetic() && c.is_lowercase() {
+            if let Some(&con_id) = keys_to_con_ids.get(&c) {
+                match &command {
+                    Command::Focus => {
+                        sway::focus(conn, con_id)?;
+                        return Ok(Some(c));
+                    }
+                    Command::Swap { focus } => {
+                        sway::swap(conn, con_id)?;
+
+                        if *focus {
+                            sway::focus(conn, con_id)?;
+                        }
+                        return Ok(Some(c));
+                    }
+                    Command::Print => {
+                        println!("{}", con_id);
+                        return Ok(Some(c));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn handle_confirmation(windows: &[gtk4::ApplicationWindow], c: char) {
+    for window in windows.as_ref() {
+        if let Some(fixed) = window
+            .child()
+            .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+        {
+            let mut child = fixed.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+
+                if let Ok(label) = widget.downcast::<gtk4::Label>() {
+                    if label.text() == c.to_string() {
+                        label.add_css_class("focused");
+                    } else {
+                        label.set_visible(false);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn create_key_controller(
+    conn: Rc<RefCell<swayipc::Connection>>,
+    windows: Rc<Vec<gtk4::ApplicationWindow>>,
+    keys_to_con_ids: Rc<HashMap<char, i64>>,
+    opts: Rc<Options>,
+) -> gtk4::EventControllerKey {
+    let key_controller = gtk4::EventControllerKey::new();
+    key_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
+        if let Some(keyval) = keyval.name() {
+            let mut delay = 0;
+
+            match handle_keypress(
+                &mut conn.borrow_mut(),
+                &keys_to_con_ids,
+                keyval.as_str(),
+                opts.command,
+            ) {
+                Err(e) => eprintln!("{}", e),
+                Ok(Some(c)) => {
+                    if opts.show_confirmation {
+                        delay = 500;
+                        handle_confirmation(windows.as_ref(), c);
+                    }
+                }
+                _ => {}
+            };
+
+            let windows = windows.clone();
+            glib::timeout_add_local(Duration::from_millis(delay), move || {
+                for window in windows.as_ref() {
+                    window.close();
+                }
+                ControlFlow::Break
+            });
+
+            Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+
+    key_controller
+}
+
 fn build_ui(
     app: &Application,
     conn: &Rc<RefCell<swayipc::Connection>>,
-    opts: &Options,
+    opts: &Rc<Options>,
 ) -> Result<(), Error> {
-    let mut conn = conn.try_borrow_mut().map_err(|_| Error::ConnectionError)?;
-    let tree = conn.get_tree()?;
+    let tree = conn
+        .try_borrow_mut()
+        .map_err(|_| Error::ConnectionError)?
+        .get_tree()?;
 
     let outputs = sway::parse_output_nodes(&tree);
     let mut chars = opts.chars.chars();
 
     let mut keys_to_con_ids = HashMap::new();
-    let mut window_ids_to_data = HashMap::new();
     let mut windows = Vec::new();
 
     for output in outputs {
         let window = gtk4::ApplicationWindow::new(app);
 
-        // Configure layer shell.
-        // Setting a namespace allows WM rules to target these windows.
         gtk4_layer_shell::LayerShell::init_layer_shell(&window);
         gtk4_layer_shell::LayerShell::set_namespace(&window, Some("sway-easyfocus"));
         gtk4_layer_shell::LayerShell::set_layer(&window, gtk4_layer_shell::Layer::Overlay);
@@ -65,10 +165,6 @@ fn build_ui(
         gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Left, true);
         gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Right, true);
 
-        // Set monitor for this output.
-        // This is necessary because Sway outputs (logical displays in the window manager) need to
-        // be mapped to GTK/GDK monitors (physical displays as seen by GTK) so that the overlay
-        // labels appear on the correct physical screen in a multi-monitor setup.
         let display = gtk4::gdk::Display::default().unwrap();
         let monitors = display.monitors();
         for i in 0..monitors.n_items() {
@@ -111,9 +207,7 @@ fn build_ui(
                     label.add_css_class("focused");
                 }
 
-                // Store mappings
                 keys_to_con_ids.insert(letter, client.id);
-                window_ids_to_data.insert(client.id, (client.clone(), output.clone(), letter));
             }
         }
 
@@ -121,7 +215,16 @@ fn build_ui(
         windows.push(window);
     }
 
+    let keys_to_con_ids = Rc::new(keys_to_con_ids);
+    let windows = Rc::new(windows);
+
     for window in windows.iter() {
+        window.add_controller(create_key_controller(
+            conn.clone(),
+            windows.clone(),
+            keys_to_con_ids.clone(),
+            opts.clone(),
+        ));
         window.present();
     }
 
@@ -132,7 +235,6 @@ fn load_css(opts: &Options) {
     let provider = CssProvider::new();
     provider.load_from_data(&opts.to_css());
 
-    // Add the provider to the default display
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().unwrap(),
         &provider,
