@@ -44,7 +44,7 @@ fn handle_keypress(
         let c = keyval.chars().next().unwrap();
         if c.is_alphabetic() && c.is_lowercase() {
             if let Some(&con_id) = keys_to_con_ids.get(&c) {
-                match &command {
+                match command {
                     Command::Focus => {
                         sway::focus(conn, con_id)?;
                         return Ok(Some(c));
@@ -52,7 +52,7 @@ fn handle_keypress(
                     Command::Swap { focus } => {
                         sway::swap(conn, con_id)?;
 
-                        if *focus {
+                        if focus {
                             sway::focus(conn, con_id)?;
                         }
                         return Ok(Some(c));
@@ -215,17 +215,19 @@ fn build_ui(
         windows.push(window);
     }
 
-    let keys_to_con_ids = Rc::new(keys_to_con_ids);
-    let windows = Rc::new(windows);
+    if !keys_to_con_ids.is_empty() {
+        let keys_to_con_ids = Rc::new(keys_to_con_ids);
+        let windows = Rc::new(windows);
 
-    for window in windows.iter() {
-        window.add_controller(create_key_controller(
-            conn.clone(),
-            windows.clone(),
-            keys_to_con_ids.clone(),
-            opts.clone(),
-        ));
-        window.present();
+        for window in windows.iter() {
+            window.add_controller(create_key_controller(
+                conn.clone(),
+                windows.clone(),
+                keys_to_con_ids.clone(),
+                opts.clone(),
+            ));
+            window.present();
+        }
     }
 
     Ok(())
