@@ -5,7 +5,7 @@ use gtk4::{
     gdk::prelude::{DisplayExt, MonitorExt},
     gio::prelude::{ApplicationExt, ApplicationExtManual, ListModelExt},
     glib::object::Cast,
-    prelude::{FixedExt, WidgetExt},
+    prelude::{FixedExt, GtkWindowExt, WidgetExt},
 };
 
 use crate::{options::Options, sway};
@@ -46,6 +46,7 @@ fn build_ui(
 
     let mut keys_to_con_ids = HashMap::new();
     let mut window_ids_to_data = HashMap::new();
+    let mut windows = Vec::new();
 
     for output in outputs {
         let window = gtk4::ApplicationWindow::new(app);
@@ -90,11 +91,11 @@ fn build_ui(
         let fixed = gtk4::Fixed::new();
 
         if let Some(workspace) = sway::find_focused_workspace(output) {
-            let windows = sway::get_all_windows(&workspace);
+            let client_windows = sway::get_all_windows(&workspace);
 
             // Create labels for windows
-            for window_node in windows.iter() {
-                let (x, y) = calculate_geometry(window_node, &output, opts);
+            for client in client_windows.iter() {
+                let (x, y) = calculate_geometry(client, &output, opts);
                 let label = gtk4::Label::new(Some(""));
 
                 let letter = chars.next().ok_or(Error::OutOfCharsError)?;
@@ -106,18 +107,22 @@ fn build_ui(
 
                 fixed.put(&label, x as f64, y as f64);
 
-                if window_node.focused {
+                if client.focused {
                     label.add_css_class("focused");
                 }
 
                 // Store mappings
-                keys_to_con_ids.insert(letter, window_node.id);
-                window_ids_to_data.insert(
-                    window_node.id,
-                    (window_node.clone(), output.clone(), letter),
-                );
+                keys_to_con_ids.insert(letter, client.id);
+                window_ids_to_data.insert(client.id, (client.clone(), output.clone(), letter));
             }
         }
+
+        window.set_child(Some(&fixed));
+        windows.push(window);
+    }
+
+    for window in windows.iter() {
+        window.present();
     }
 
     Ok(())

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use swayipc::*;
 
 pub fn parse_output_nodes(tree: &Node) -> Vec<&Node> {
-    let mut output_nodes = vec![];
+    let mut output_nodes = Vec::new();
     let mut q = VecDeque::new();
 
     q.push_back(tree);
@@ -35,7 +35,7 @@ pub fn find_focused_workspace(output: &Node) -> Option<Node> {
 }
 
 pub fn get_all_windows(workspace: &Node) -> Vec<Node> {
-    let mut nodes = vec![];
+    let mut nodes = Vec::new();
     let mut q = VecDeque::new();
 
     q.push_back(workspace.clone());
