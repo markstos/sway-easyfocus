@@ -1,5 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
+use serde::{Deserialize, de, de::Visitor};
+
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
     InvalidRgb,
@@ -43,5 +45,37 @@ impl FromStr for Rgb {
         } else {
             Err(Error::InvalidRgb)
         }
+    }
+}
+
+impl Display for Rgb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{},{},{}", self.r, self.g, self.b))
+    }
+}
+
+impl<'de> Deserialize<'de> for Rgb {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RgbVisitor;
+        impl<'de> Visitor<'de> for RgbVisitor {
+            type Value = Rgb;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("RGB string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Rgb, E>
+            where
+                E: de::Error,
+            {
+                Rgb::from_str(value)
+                    .map_err(|_| de::Error::invalid_value(de::Unexpected::Str(value), &self))
+            }
+        }
+
+        deserializer.deserialize_str(RgbVisitor)
     }
 }

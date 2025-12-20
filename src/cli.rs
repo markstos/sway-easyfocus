@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+use serde::Deserialize;
+
 use crate::util::Rgb;
 
 /// What to do with the selected container.
@@ -23,78 +25,79 @@ pub enum Command {
 }
 
 /// A tool to help efficiently focus windows in Sway, inspired by i3-easyfocus.
-#[derive(Parser, Debug, Clone)]
+#[derive(Deserialize, Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// The list of characters to use for hints
-    #[arg(long, default_value = "fjghdkslaemuvitywoqpcbnxz")]
-    pub chars: String,
+    /// The list of chars to use for hints
+    #[arg(long)]
+    pub chars: Option<String>,
 
     /// The window background color <rrggbb>
-    #[arg(long, default_value = "1d1f21")]
-    pub window_background_color: Rgb,
+    #[arg(long)]
+    pub window_background_color: Option<Rgb>,
 
     /// The window background opacity <0-1.0>
-    #[arg(long, default_value_t = 0.2)]
-    pub window_background_opacity: f64,
+    #[arg(long)]
+    pub window_background_opacity: Option<f64>,
 
     /// The label background color <rrggbb>
-    #[arg(long, default_value = "1d1f21")]
-    pub label_background_color: Rgb,
+    #[arg(long)]
+    pub label_background_color: Option<Rgb>,
 
     /// The label background opacity <0-1.0>
-    #[arg(long, default_value_t = 1.0)]
-    pub label_background_opacity: f64,
+    #[arg(long)]
+    pub label_background_opacity: Option<f64>,
 
     /// The label text color <rrggbb>
-    #[arg(long, default_value = "c5c8c6")]
-    pub label_text_color: Rgb,
+    #[arg(long)]
+    pub label_text_color: Option<Rgb>,
 
     /// The label background color <rrggbb>
-    #[arg(long, default_value = "285577")]
-    pub focused_background_color: Rgb,
+    #[arg(long)]
+    pub focused_background_color: Option<Rgb>,
 
     /// The focused background opacity <0-1.0>
-    #[arg(long, default_value_t = 1.0)]
-    pub focused_background_opacity: f64,
+    #[arg(long)]
+    pub focused_background_opacity: Option<f64>,
 
     /// The focused text color <rrggbb>
-    #[arg(long, default_value = "ffffff")]
-    pub focused_text_color: Rgb,
+    #[arg(long)]
+    pub focused_text_color: Option<Rgb>,
 
     /// The font family
-    #[arg(long, default_value = "monospace")]
-    pub font_family: String,
+    #[arg(long)]
+    pub font_family: Option<String>,
 
     /// The font weight
-    #[arg(long, default_value = "bold")]
-    pub font_weight: String,
+    #[arg(long)]
+    pub font_weight: Option<String>,
 
     /// The font size, see: https://www.w3.org/TR/css-fonts-3/#font-size-prop
-    #[arg(long, default_value = "medium")]
-    pub font_size: String,
+    #[arg(long)]
+    pub font_size: Option<String>,
 
     /// The label padding-x <px>
-    #[arg(long, default_value_t = 4)]
-    pub label_padding_x: i32,
+    #[arg(long)]
+    pub label_padding_x: Option<i32>,
 
     /// The label padding-y <px>
-    #[arg(long, default_value_t = 0)]
-    pub label_padding_y: i32,
+    #[arg(long)]
+    pub label_padding_y: Option<i32>,
 
     /// The label margin-x <px>
-    #[arg(long, default_value_t = 4)]
-    pub label_margin_x: i32,
+    #[arg(long)]
+    pub label_margin_x: Option<i32>,
 
     /// The label margin-y <px>
-    #[arg(long, default_value_t = 2)]
-    pub label_margin_y: i32,
+    #[arg(long)]
+    pub label_margin_y: Option<i32>,
 
     /// Show confirmation window after selection
-    #[arg(long = "show-confirmation", default_value_t = false)]
-    pub show_confirmation: bool,
+    #[arg(long = "show-confirmation")]
+    pub show_confirmation: Option<bool>,
 
-    /// The selected command [default: Focus]
+    /// The selected command
     #[command(subcommand)]
+    #[serde(skip)]
     pub command: Option<Command>,
 }
