@@ -2,6 +2,12 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use clap::Parser;
+
+mod cli;
+mod config;
+mod util;
+
 fn make_lockfile() -> io::Result<PathBuf> {
     use std::env;
 
@@ -10,6 +16,7 @@ fn make_lockfile() -> io::Result<PathBuf> {
         if tentative_dir.is_dir() {
             PathBuf::from(tentative_dir)
         } else {
+            eprintln!("[$TMPDIR] is not a directory! Falling back to [/tmp].");
             PathBuf::from("/tmp")
         }
     });
@@ -19,9 +26,10 @@ fn make_lockfile() -> io::Result<PathBuf> {
 }
 
 fn main() {
-    let lock_path = make_lockfile().expect("Lockfile exists! (Is another instance running?)");
+    let args = cli::Args::parse();
+    let _ = dbg!(args);
 
-    std::thread::sleep(std::time::Duration::from_secs(10));
+    let lock_path = make_lockfile().expect("Lockfile exists! (Is another instance running?)");
 
     std::fs::remove_file(&lock_path).expect(&format!(
         "Failed to remove lockfile at {}.",
