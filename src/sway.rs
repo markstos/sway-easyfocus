@@ -1,33 +1,13 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use std::collections::VecDeque;
 
 use swayipc::*;
 
-pub fn acquire_connection() -> Connection {
-    swayipc::Connection::new().expect("failed to connect to sway")
-}
-
-pub fn get_tree(conn: Arc<Mutex<Connection>>) -> Node {
-    let mut conn_lock = conn.lock().unwrap();
-    conn_lock
-        .get_tree()
-        .expect("failed to communicate with sway")
-}
-
-// Get all output nodes, focused or not
-pub fn get_all_output_nodes(conn: Arc<Mutex<Connection>>) -> Vec<Node> {
-    let mut output_nodes = vec![];
+pub fn parse_output_nodes(tree: &Node) -> Vec<&Node> {
+    let mut output_nodes = Vec::new();
     let mut q = VecDeque::new();
-    let root_node = get_tree(conn);
 
-    q.push_back(root_node);
-
-    while !q.is_empty() {
-        // We can unwrap because we know the queue is not empty
-        let node = q.pop_back().unwrap();
-
+    q.push_back(tree);
+    while let Some(node) = q.pop_front() {
         // If we have an output node (and it's not a special/virtual output)
         if (node.node_type == NodeType::Output)
             && !node.nodes.is_empty()
@@ -36,33 +16,30 @@ pub fn get_all_output_nodes(conn: Arc<Mutex<Connection>>) -> Vec<Node> {
                 .as_ref()
                 .is_none_or(|name| name != "__i3" && name != "__i3_scratch")
         {
-            output_nodes.push(node.clone());
+            output_nodes.push(node);
         }
 
         // Look for more outputs in the children
-        for child in node.nodes {
-            q.push_back(child.clone());
+        for child in &node.nodes {
+            q.push_back(child);
         }
     }
+
     output_nodes
 }
 
-pub fn get_focused_workspace(output: &Node) -> Node {
+pub fn find_focused_workspace(output: &Node) -> Option<Node> {
     output
         .clone()
         .find_focused(|n| n.node_type == swayipc::NodeType::Workspace)
-        .expect("could not find focused workspace")
 }
 
 pub fn get_all_windows(workspace: &Node) -> Vec<Node> {
-    let mut nodes = vec![];
-
+    let mut nodes = Vec::new();
     let mut q = VecDeque::new();
-    q.push_back(workspace.clone());
-    while !q.is_empty() {
-        // we can unwrap because we know that the queue is not empty
-        let node = q.pop_back().unwrap();
 
+    q.push_back(workspace.clone());
+    while let Some(node) = q.pop_back() {
         // if we have a window
         if (node.node_type == NodeType::Con || node.node_type == NodeType::FloatingCon)
             && node.nodes.is_empty()
@@ -86,26 +63,19 @@ pub fn get_all_windows(workspace: &Node) -> Vec<Node> {
         }
 
         // floating nodes
-        for child in node.floating_nodes {
+        for child in &node.floating_nodes {
             q.push_back(child.clone());
         }
     }
 
     nodes.reverse();
-    // dbg!(&nodes);
     nodes
 }
 
-pub fn focus(conn: Arc<Mutex<Connection>>, con_id: i64) {
-    let mut conn_lock = conn.lock().unwrap();
-    conn_lock
-        .run_command(format!("[con_id={}] focus", con_id))
-        .expect("failed to focus container");
+pub fn focus(conn: &mut Connection, con_id: i64) -> Fallible<Vec<Fallible<()>>> {
+    conn.run_command(format!("[con_id={}] focus", con_id))
 }
 
-pub fn swap(conn: Arc<Mutex<Connection>>, con_id: i64) {
-    let mut conn_lock = conn.lock().unwrap();
-    conn_lock
-        .run_command(format!("swap container with con_id {}", con_id))
-        .expect("failed to swap container");
+pub fn swap(conn: &mut Connection, con_id: i64) -> Fallible<Vec<Fallible<()>>> {
+    conn.run_command(format!("swap container with con_id {}", con_id))
 }

@@ -1,37 +1,81 @@
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
 use clap::Parser;
-use cli::Args;
-use figment::{
-    providers::{Format, Yaml},
-    Figment,
-};
-use std::sync::{Arc, Mutex};
+use figment::Figment;
+use figment::providers::{Format, Yaml};
+
+use crate::options::Options;
 
 mod cli;
+mod options;
 mod sway;
 mod ui;
-mod utils;
+mod util;
 
-fn parse_config() -> Arc<Args> {
-    // there is probably a way better way to do this...
-    let mut args = Args::default();
+struct Lockfile {
+    path: PathBuf,
+}
+
+impl Drop for Lockfile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).expect(&format!(
+            "Failed to remove lockfile at {}.",
+            &self.path.display()
+        ));
+    }
+}
+
+impl Lockfile {
+    pub fn new() -> Self {
+        use std::env;
+
+        let mut lock_path = env::var("TMPDIR").map_or(PathBuf::from("/tmp"), |dir| {
+            let tentative_dir = Path::new(&dir);
+            if tentative_dir.is_dir() {
+                PathBuf::from(tentative_dir)
+            } else {
+                eprintln!("[$TMPDIR] is not a directory! Falling back to [/tmp].");
+                PathBuf::from("/tmp")
+            }
+        });
+
+        lock_path.push("sway-easyfocus-lockfile");
+        File::create_new(&lock_path)
+            .map(move |_| Self { path: lock_path })
+            .expect("Lockfile exists! (Is another instance running?)")
+    }
+}
+
+fn read_options() -> Rc<Options> {
+    let mut opts = Options::default();
+
     let base_dirs = xdg::BaseDirectories::with_prefix("sway-easyfocus");
     let config_path = base_dirs
         .place_config_file("config.yaml")
         .expect("failed to create config directory");
-    if let Ok(config_args) = Figment::new()
+
+    if let Ok(args) = Figment::new()
         .merge(Yaml::file(&config_path))
-        .extract::<Args>()
+        .extract::<cli::Args>()
     {
-        args.merge(&config_args);
-        // dbg!(&config_args);
+        opts.merge(&args);
     }
-    let cli_args = Args::parse();
-    args.merge(&cli_args);
-    Arc::new(args)
+
+    let cli_args = cli::Args::parse();
+    opts.merge(&cli_args);
+
+    Rc::new(opts)
 }
 
 fn main() {
-    let args = parse_config();
-    let conn = Arc::new(Mutex::new(sway::acquire_connection()));
-    ui::run_ui(conn, args);
+    let _ = Lockfile::new();
+
+    let opts = read_options();
+
+    match swayipc::Connection::new() {
+        Ok(conn) => ui::run_ui(conn, opts),
+        Err(_) => eprintln!("Failed to connect to sway."),
+    }
 }

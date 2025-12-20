@@ -1,21 +1,20 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, time::Duration};
 
-use gtk4::glib::ControlFlow;
-use gtk4::{glib, prelude::*, Application, CssProvider};
-use gtk4_layer_shell as gtk_layer_shell;
-use swayipc::{Connection, Node, NodeLayout};
+use gtk4::{
+    Application, CssProvider,
+    gdk::prelude::{DisplayExt, MonitorExt},
+    gio::prelude::{ApplicationExt, ApplicationExtManual, ListModelExt},
+    glib::{self, ControlFlow, Propagation, object::Cast},
+    prelude::{FixedExt, GtkWindowExt, WidgetExt},
+};
 
-use crate::{cli::Args, cli::Command, sway, utils};
+use crate::{cli::Command, options::Options, sway};
 
-// Type alias for window mapping data: (window_node, output_node, label_char)
-type WindowMapData = HashMap<i64, (Node, Node, char)>;
-
-fn calculate_geometry(window: &Node, output: &Node, args: Arc<Args>) -> (i32, i32) {
-    // dbg!(&window);
+fn calculate_geometry(
+    window: &swayipc::Node,
+    output: &swayipc::Node,
+    opts: &Options,
+) -> (i32, i32) {
     let rect = window.rect;
     let window_rect = window.window_rect;
     let deco_rect = window.deco_rect;
@@ -23,9 +22,9 @@ fn calculate_geometry(window: &Node, output: &Node, args: Arc<Args>) -> (i32, i3
     let anchor_x = output.rect.x;
     let anchor_y = output.rect.y;
 
-    let rel_x = rect.x + window_rect.x + deco_rect.x + args.label_margin_x.unwrap();
-    let rel_y = rect.y - (deco_rect.height - args.label_margin_y.unwrap())
-        + if window.layout == NodeLayout::Stacked {
+    let rel_x = rect.x + window_rect.x + deco_rect.x + opts.label_margin_x;
+    let rel_y = rect.y - (deco_rect.height - opts.label_margin_y)
+        + if window.layout == swayipc::NodeLayout::Stacked {
             deco_rect.y
         } else {
             0
@@ -35,83 +34,137 @@ fn calculate_geometry(window: &Node, output: &Node, args: Arc<Args>) -> (i32, i3
 }
 
 fn handle_keypress(
-    conn: Arc<Mutex<Connection>>,
-    key_to_con_id: &HashMap<char, i64>,
+    conn: &mut swayipc::Connection,
+    keys_to_con_ids: &HashMap<char, i64>,
     keyval: &str,
-    command: &Command,
-) -> bool {
+    command: Command,
+) -> Result<Option<char>, swayipc::Error> {
     if keyval.len() == 1 {
-        // we can unwrap because the keyval has one character
+        // we can unwrap because keyval has length 1
         let c = keyval.chars().next().unwrap();
         if c.is_alphabetic() && c.is_lowercase() {
-            if let Some(con_id) = key_to_con_id.get(&c) {
-                match &command {
+            if let Some(&con_id) = keys_to_con_ids.get(&c) {
+                match command {
                     Command::Focus => {
-                        sway::focus(conn, *con_id);
-                        return true;
+                        sway::focus(conn, con_id)?;
+                        return Ok(Some(c));
                     }
                     Command::Swap { focus } => {
-                        sway::swap(conn.clone(), *con_id);
+                        sway::swap(conn, con_id)?;
 
-                        if *focus {
-                            sway::focus(conn, *con_id);
+                        if focus {
+                            sway::focus(conn, con_id)?;
                         }
-                        return true;
+                        return Ok(Some(c));
                     }
                     Command::Print => {
                         println!("{}", con_id);
-                        return true;
+                        return Ok(Some(c));
                     }
                 }
             }
         }
     }
-    false
+    Ok(None)
 }
 
-fn build_ui(app: &Application, args: Arc<Args>, conn: Arc<Mutex<Connection>>) {
-    let output_nodes = sway::get_all_output_nodes(conn.clone());
+fn handle_confirmation(windows: &[gtk4::ApplicationWindow], c: char) {
+    for window in windows.as_ref() {
+        if let Some(fixed) = window
+            .child()
+            .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+        {
+            let mut child = fixed.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
 
-    // Shared state for all monitors
-    let all_key_to_con_id: Rc<RefCell<HashMap<char, i64>>> = Rc::new(RefCell::new(HashMap::new()));
-    let all_windows: Rc<RefCell<Vec<gtk4::ApplicationWindow>>> = Rc::new(RefCell::new(Vec::new()));
-    let all_windows_map: Rc<RefCell<WindowMapData>> = Rc::new(RefCell::new(HashMap::new()));
-
-    // Get global character sequence
-    let letters = args.chars.clone().expect("Some characters are required");
-    let mut chars = letters.chars();
-
-    // Process each output
-    for output in output_nodes {
-        let workspace = sway::get_focused_workspace(&output);
-        let windows = sway::get_all_windows(&workspace);
-
-        // Skip empty workspaces
-        if windows.is_empty() {
-            continue;
+                if let Ok(label) = widget.downcast::<gtk4::Label>() {
+                    if label.text() == c.to_string() {
+                        label.add_css_class("focused");
+                    } else {
+                        label.set_visible(false);
+                    }
+                }
+            }
         }
+    }
+}
 
-        // Create GTK window for this output
+fn create_key_controller(
+    conn: Rc<RefCell<swayipc::Connection>>,
+    windows: Rc<Vec<gtk4::ApplicationWindow>>,
+    keys_to_con_ids: Rc<HashMap<char, i64>>,
+    opts: Rc<Options>,
+) -> gtk4::EventControllerKey {
+    let key_controller = gtk4::EventControllerKey::new();
+    key_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
+        if let Some(keyval) = keyval.name() {
+            let mut delay = 0;
+
+            match handle_keypress(
+                &mut conn.borrow_mut(),
+                &keys_to_con_ids,
+                keyval.as_str(),
+                opts.command,
+            ) {
+                Err(e) => eprintln!("{}", e),
+                Ok(Some(c)) => {
+                    if opts.show_confirmation {
+                        delay = 500;
+                        handle_confirmation(windows.as_ref(), c);
+                    }
+                }
+                _ => {}
+            };
+
+            let windows = windows.clone();
+            glib::timeout_add_local(Duration::from_millis(delay), move || {
+                for window in windows.as_ref() {
+                    window.close();
+                }
+                ControlFlow::Break
+            });
+
+            Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+
+    key_controller
+}
+
+fn build_ui(
+    app: &Application,
+    conn: &Rc<RefCell<swayipc::Connection>>,
+    opts: &Rc<Options>,
+) -> Result<(), Error> {
+    let tree = conn
+        .try_borrow_mut()
+        .map_err(|_| Error::ConnectionError)?
+        .get_tree()?;
+
+    let outputs = sway::parse_output_nodes(&tree);
+    let mut chars = opts.chars.chars();
+
+    let mut keys_to_con_ids = HashMap::new();
+    let mut windows = Vec::new();
+
+    for output in outputs {
         let window = gtk4::ApplicationWindow::new(app);
 
-        // Configure layer shell
-        // Setting a namespace allows WM rules to target these windows.
-        gtk_layer_shell::LayerShell::init_layer_shell(&window);
-        gtk_layer_shell::LayerShell::set_namespace(&window, Some("sway-easyfocus"));
-        gtk_layer_shell::LayerShell::set_layer(&window, gtk_layer_shell::Layer::Overlay);
-        gtk_layer_shell::LayerShell::set_keyboard_mode(
+        gtk4_layer_shell::LayerShell::init_layer_shell(&window);
+        gtk4_layer_shell::LayerShell::set_namespace(&window, Some("sway-easyfocus"));
+        gtk4_layer_shell::LayerShell::set_layer(&window, gtk4_layer_shell::Layer::Overlay);
+        gtk4_layer_shell::LayerShell::set_keyboard_mode(
             &window,
-            gtk_layer_shell::KeyboardMode::Exclusive,
+            gtk4_layer_shell::KeyboardMode::Exclusive,
         );
-        gtk_layer_shell::LayerShell::set_anchor(&window, gtk_layer_shell::Edge::Top, true);
-        gtk_layer_shell::LayerShell::set_anchor(&window, gtk_layer_shell::Edge::Bottom, true);
-        gtk_layer_shell::LayerShell::set_anchor(&window, gtk_layer_shell::Edge::Left, true);
-        gtk_layer_shell::LayerShell::set_anchor(&window, gtk_layer_shell::Edge::Right, true);
+        gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Top, true);
+        gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Bottom, true);
+        gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Left, true);
+        gtk4_layer_shell::LayerShell::set_anchor(&window, gtk4_layer_shell::Edge::Right, true);
 
-        // Set monitor for this output
-        // This is necessary because Sway outputs (logical displays in the window manager) need to
-        // be mapped to GTK/GDK monitors (physical displays as seen by GTK) so that the overlay
-        // labels appear on the correct physical screen in a multi-monitor setup.
         let display = gtk4::gdk::Display::default().unwrap();
         let monitors = display.monitors();
         for i in 0..monitors.n_items() {
@@ -125,7 +178,7 @@ fn build_ui(app: &Application, args: Arc<Args>, conn: Arc<Mutex<Connection>>) {
                     && geometry.y() <= output.rect.y
                     && output.rect.y < geometry.y() + geometry.height()
                 {
-                    gtk_layer_shell::LayerShell::set_monitor(&window, Some(&monitor));
+                    gtk4_layer_shell::LayerShell::set_monitor(&window, Some(&monitor));
                     break;
                 }
             }
@@ -133,144 +186,57 @@ fn build_ui(app: &Application, args: Arc<Args>, conn: Arc<Mutex<Connection>>) {
 
         let fixed = gtk4::Fixed::new();
 
-        // Create labels for windows
-        for window_node in windows.iter() {
-            let (x, y) = calculate_geometry(window_node, &output, args.clone());
-            let label = gtk4::Label::new(Some(""));
+        if let Some(workspace) = sway::find_focused_workspace(output) {
+            let client_windows = sway::get_all_windows(&workspace);
 
-            let letter = chars.next().expect(
-                "Ran out of characters for highlighting windows. Consider using a longer \
-                 character set with --chars or reduce the number of visible windows.",
-            );
+            // Create labels for windows
+            for client in client_windows.iter() {
+                let (x, y) = calculate_geometry(client, &output, opts);
+                let label = gtk4::Label::new(Some(""));
 
-            // Store mappings
-            all_key_to_con_id
-                .borrow_mut()
-                .insert(letter, window_node.id);
-            all_windows_map.borrow_mut().insert(
-                window_node.id,
-                (window_node.clone(), output.clone(), letter),
-            );
+                let letter = chars.next().ok_or(Error::OutOfCharsError)?;
 
-            label.set_markup(&format!("{}", letter));
+                label.set_markup(&format!("{}", letter));
 
-            // Ensure labels are visible and properly sized on the overlay
-            label.set_halign(gtk4::Align::Center);
-            label.set_valign(gtk4::Align::Center);
+                label.set_halign(gtk4::Align::Center);
+                label.set_valign(gtk4::Align::Center);
 
-            fixed.put(&label, x as f64, y as f64);
+                fixed.put(&label, x as f64, y as f64);
 
-            if window_node.focused {
-                label.add_css_class("focused");
+                if client.focused {
+                    label.add_css_class("focused");
+                }
+
+                keys_to_con_ids.insert(letter, client.id);
             }
         }
 
-        // Set up key handler - use global key map for both single and multi-monitor
-        let key_map = all_key_to_con_id.clone();
-
-        let all_windows_clone = all_windows.clone();
-        let args_clone = args.clone();
-        let conn_clone = conn.clone();
-        let all_windows_map_clone = all_windows_map.clone();
-
-        // GTK 4 uses EventControllerKey for keyboard input
-        let key_controller = gtk4::EventControllerKey::new();
-        key_controller.connect_key_pressed(move |_, keyval, _keycode, _state| {
-            let keyval_name = keyval.name();
-            if let Some(keyval_str) = keyval_name {
-                let keyval_str = keyval_str.as_str();
-
-                let window_focused = handle_keypress(
-                    conn_clone.clone(),
-                    &key_map.borrow(),
-                    keyval_str,
-                    &args_clone.command.unwrap_or(Command::Focus),
-                );
-
-                if window_focused {
-                    let c = keyval_str.chars().next().unwrap();
-                    let show_confirmation = args_clone.show_confirmation.unwrap_or(true);
-
-                    // Find and update the selected label, hide all other labels
-                    if show_confirmation {
-                        if let Some(con_id) = key_map.borrow().get(&c) {
-                            if let Some((_, _, _)) = all_windows_map_clone.borrow().get(con_id) {
-                                // Find the label for this character across all windows
-                                for window in all_windows_clone.borrow().iter() {
-                                    let mut found_selected_label = false;
-                                    if let Some(fixed) = window
-                                        .child()
-                                        .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
-                                    {
-                                        let mut child = fixed.first_child();
-                                        while let Some(widget) = child {
-                                            // Get next sibling before moving widget
-                                            child = widget.next_sibling();
-                                            if let Ok(label) = widget.downcast::<gtk4::Label>() {
-                                                if label.text() == c.to_string() {
-                                                    // Update CSS class to reflect focus change
-                                                    label.add_css_class("focused");
-                                                    found_selected_label = true;
-                                                } else {
-                                                    // Hide all other labels
-                                                    label.set_visible(false);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Hide windows that don't contain the selected label
-                                    if !found_selected_label {
-                                        window.set_visible(false);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // If no confirmation, hide all windows immediately
-                        for w in all_windows_clone.borrow().iter() {
-                            w.set_visible(false);
-                        }
-                    }
-
-                    // Close all windows after delay (or immediately if no confirmation)
-                    let windows_to_close = all_windows_clone.borrow().clone();
-                    let delay = if show_confirmation { 500 } else { 0 };
-                    glib::timeout_add_local(Duration::from_millis(delay), move || {
-                        for w in windows_to_close.iter() {
-                            w.close();
-                        }
-                        ControlFlow::Break
-                    });
-
-                    glib::Propagation::Stop
-                } else {
-                    // Close windows on escape or invalid key
-                    for w in all_windows_clone.borrow().iter() {
-                        w.close();
-                    }
-                    glib::Propagation::Stop
-                }
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-
-        window.add_controller(key_controller);
         window.set_child(Some(&fixed));
-        all_windows.borrow_mut().push(window);
+        windows.push(window);
     }
 
-    // Show all windows
-    for window in all_windows.borrow().iter() {
-        window.present();
+    if !keys_to_con_ids.is_empty() {
+        let keys_to_con_ids = Rc::new(keys_to_con_ids);
+        let windows = Rc::new(windows);
+
+        for window in windows.iter() {
+            window.add_controller(create_key_controller(
+                conn.clone(),
+                windows.clone(),
+                keys_to_con_ids.clone(),
+                opts.clone(),
+            ));
+            window.present();
+        }
     }
+
+    Ok(())
 }
 
-fn load_css(args: Arc<Args>) {
+fn load_css(opts: &Options) {
     let provider = CssProvider::new();
-    provider.load_from_data(&utils::args_to_css(&args));
+    provider.load_from_data(&opts.to_css());
 
-    // Add the provider to the default display
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().unwrap(),
         &provider,
@@ -278,18 +244,43 @@ fn load_css(args: Arc<Args>) {
     );
 }
 
-pub fn run_ui(conn: Arc<Mutex<Connection>>, args: Arc<Args>) {
+pub fn run_ui(conn: swayipc::Connection, opts: Rc<Options>) {
     let app = Application::builder()
         .application_id("com.github.edzdez.sway-easyfocus")
         .build();
 
-    let args_clone = args.clone();
-    app.connect_startup(move |_| load_css(args_clone.clone()));
+    let opts_clone = opts.clone();
+    app.connect_startup(move |_| load_css(&opts_clone));
 
+    let conn = Rc::new(RefCell::new(conn));
     app.connect_activate(move |app| {
-        build_ui(app, args.clone(), conn.clone());
+        if let Err(err) = build_ui(app, &conn, &opts) {
+            eprintln!("{}", err);
+        }
     });
 
-    let empty: Vec<String> = vec![];
-    app.run_with_args(&empty);
+    app.run_with_args::<String>(&[]);
+}
+
+#[derive(Debug)]
+pub enum Error {
+    ConnectionError,
+    SwayIpcError(swayipc::Error),
+    OutOfCharsError,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConnectionError => f.write_str("An error occured with the connection."),
+            Self::SwayIpcError(err) => f.write_fmt(format_args!("{}", err)),
+            Self::OutOfCharsError => f.write_str("Ran out of character labels."),
+        }
+    }
+}
+
+impl From<swayipc::Error> for Error {
+    fn from(value: swayipc::Error) -> Self {
+        Self::SwayIpcError(value)
+    }
 }

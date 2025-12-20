@@ -2,21 +2,20 @@
 name = "sway-easyfocus"
 authors = ["Ethan Zhang <ethanz4@illinois.edu>"]
 description = "A tool to help efficiently focus windows in Sway inspired by i3-easyfocus."
-version = "0.3.0"
-edition = "2021"
+version = "1.0.0"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/edzdez/sway-easyfocus"
 readme = "README.md"
 keywords = ["cli", "sway"]
 categories = ["command-line-utilities"]
-exclude = ["screenshots/*"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gtk4 = "0.9"
-gtk4-layer-shell = "0.5"
-swayipc = "3.0"
+gtk4 = "0.10"
+gtk4-layer-shell = "0.7"
+swayipc = "4.0"
 clap = { version = "4.5", features = ["derive"] }
 figment = { version = "0.10", features = ["yaml"] }
 serde = { version = "1.0", features = ["derive"] }
