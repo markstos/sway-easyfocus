@@ -75,4 +75,41 @@ impl Options {
         update!(label_margin_y);
         update!(show_confirmation);
     }
+
+    pub fn to_css(&self) -> String {
+        format!(
+            r#"
+            window {{
+                background: rgba({},{});
+            }}
+
+            window label {{
+                background: rgba({},{});
+                color: rgb({});
+                font-family: {};
+                font-weight: {};
+                font-size: {};
+                padding: {}px {}px;
+            }}
+
+            .focused {{
+                background: rgba({},{});
+                color: rgb({});
+            }}
+            "#,
+            self.window_background_color,
+            self.window_background_opacity,
+            self.label_background_color,
+            self.label_background_opacity,
+            self.label_text_color,
+            self.font_family,
+            self.font_weight,
+            self.font_size,
+            self.label_padding_y,
+            self.label_padding_x,
+            self.focused_background_color,
+            self.focused_background_opacity,
+            self.focused_text_color,
+        )
+    }
 }

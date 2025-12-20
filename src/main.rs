@@ -11,6 +11,7 @@ use crate::options::Options;
 
 mod cli;
 mod options;
+mod ui;
 mod util;
 
 fn make_lockfile() -> io::Result<PathBuf> {
@@ -53,9 +54,10 @@ fn read_options() -> Rc<Options> {
 
 fn main() {
     let opts = read_options();
-    let _ = dbg!(opts);
 
     let lock_path = make_lockfile().expect("Lockfile exists! (Is another instance running?)");
+
+    ui::run_ui(opts);
 
     std::fs::remove_file(&lock_path).expect(&format!(
         "Failed to remove lockfile at {}.",
